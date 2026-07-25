@@ -152,3 +152,47 @@ class TestRanking:
         ranked = rank_chunks("query", chunks, top_k=10)
         assert ranked is not None
         assert len(ranked) == 2
+
+    @requires_model
+    def test_diversify_dedups_same_source_url(self):
+        """Top-2 should pick different URLs when both are available."""
+        chunks = [
+            {"text": "Python is great.", "parent_text": "...", "chunk_index": 0,
+             "source": {"url": "https://a.com/page"}},
+            {"text": "Python is also great.", "parent_text": "...", "chunk_index": 1,
+             "source": {"url": "https://a.com/page"}},
+            {"text": "Python is popular.", "parent_text": "...", "chunk_index": 2,
+             "source": {"url": "https://b.com/other"}},
+        ]
+        ranked = rank_chunks("why is python great", chunks, top_k=2)
+        assert ranked is not None
+        assert len(ranked) == 2
+        # Both chunks should be from different URLs.
+        urls = {r["source"]["url"] for r in ranked}
+        assert len(urls) == 2
+
+    @requires_model
+    def test_diversify_fallback_when_too_few_sources(self):
+        """Only 1 unique URL but top_k=2 → fill from same source."""
+        chunks = [
+            {"text": "A chunk about Python.", "parent_text": "...", "chunk_index": 0,
+             "source": {"url": "https://only.com/page"}},
+            {"text": "Another chunk about Python.", "parent_text": "...", "chunk_index": 1,
+             "source": {"url": "https://only.com/page"}},
+            {"text": "Third chunk about Python.", "parent_text": "...", "chunk_index": 2,
+             "source": {"url": "https://only.com/page"}},
+        ]
+        ranked = rank_chunks("python", chunks, top_k=2)
+        assert ranked is not None
+        assert len(ranked) == 2  # fills second slot from same URL
+
+    @requires_model
+    def test_diversify_no_source_url_does_not_crash(self):
+        """Chunks without source.url are treated as unique (no crash)."""
+        chunks = [
+            {"text": "Python is fun.", "parent_text": "...", "chunk_index": 0},
+            {"text": "Python is nice.", "parent_text": "...", "chunk_index": 1},
+        ]
+        ranked = rank_chunks("python", chunks, top_k=2)
+        assert ranked is not None
+        assert len(ranked) == 2

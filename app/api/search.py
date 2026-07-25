@@ -11,7 +11,7 @@ from app.services.ranking_service import rank_chunks
 from app.services.scrubber_service import scrub_content
 from app.services.fetch_service import FetchService
 from app.services.searxng_service import SearXNGService
-from app.utils.url import dedup_results
+from app.utils.url import dedup_results, normalize_url
 
 router = APIRouter()
 
@@ -116,7 +116,7 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
                 all_chunks.append({
                     **c,
                     "source": {
-                        "url": r.url,
+                        "url": normalize_url(r.url),
                         "title": r.title,
                         "searxng_score": r.searxng_score,
                     },
@@ -133,7 +133,7 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
                     **c,
                     "score": 0.0,
                     "source": {
-                        "url": r.url,
+                        "url": normalize_url(r.url),
                         "title": r.title,
                         "searxng_score": r.searxng_score,
                     },

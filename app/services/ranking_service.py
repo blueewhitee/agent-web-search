@@ -54,10 +54,35 @@ def rank_chunks(
     scores = chunk_vecs @ query_vec  # (n,)
 
     k = min(top_k, len(chunks))
-    top_indices = np.argsort(scores)[-k:][::-1]
+
+    # Source diversity (D-020): one chunk per unique source URL in top-K.
+    # Two passes: first collect one chunk per URL, then fill remaining
+    # slots from any source if not enough unique URLs exist.
+    all_indices = np.argsort(scores)[::-1]
+    seen_urls: set[str] = set()
+    diversified: list[int] = []
+
+    for idx in all_indices:
+        url = chunks[idx].get("source", {}).get("url", "")
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        diversified.append(int(idx))
+        if len(diversified) >= k:
+            break
+
+    # Fallback: if not enough unique source URLs, fill remaining slots
+    # with the next-best chunks regardless of source.
+    if len(diversified) < k:
+        for idx in all_indices:
+            if idx not in diversified:
+                diversified.append(int(idx))
+                if len(diversified) >= k:
+                    break
 
     ranked: list[dict] = []
-    for idx in top_indices:
+    for idx in diversified:
         c = chunks[idx]
         ranked.append({
             "text": c["text"],

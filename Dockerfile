@@ -11,10 +11,8 @@ RUN apt-get update -qq && apt-get install -y -qq \
 # ── Install Python deps ────────────────────────────────────────
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-# Install CPU-only PyTorch first to avoid pulling ~2GB of CUDA libs
-# (sentence-transformers depends on torch; without this, uv pulls the
-# full CUDA package that only matters for GPU training, not inference).
-RUN uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+# sentence-transformers[onnx] uses ONNX Runtime (~50 MB) instead of
+# PyTorch (~526 MB CUDA wheel). No torch = no nvidia-* / CUDA bloat.
 RUN uv sync --frozen --no-dev
 
 # ── Copy source ────────────────────────────────────────────────

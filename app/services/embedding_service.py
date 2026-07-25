@@ -1,8 +1,8 @@
 """Stage 5: BGE embedding model loader (D-018).
 
-Pure module-level function, lazy-load + cache (same pattern as
-_tokenizer in chunking_service.py). The model is 24M params,
-384-dim, retrieval-trained.
+Pure module-level function, lazy-load + cache. Uses fastembed (ONNX
+Runtime, ~50 MB) instead of sentence-transformers+PyTorch (~526 MB CUDA
+wheel). fastembed's DefaultEmbedding IS BAAI/bge-small-en-v1.5.
 
 Query prefix per BAAI model card v1.5:
     "Represent this sentence for searching relevant passages: "
@@ -15,8 +15,6 @@ Returns None on import/download failure → caller sets low_confidence.
 
 from __future__ import annotations
 
-import warnings
-
 # ── Query instruction prefix ──────────────────────────────────
 
 _QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
@@ -28,18 +26,15 @@ _FALLBACK = False
 
 
 def _load_model() -> None:
-    """Lazy-load bge-small-en-v1.5, cache at module level. ~100MB, ~500ms first call."""
+    """Lazy-load bge-small-en-v1.5 via fastembed, cache at module level."""
     global _model, _FALLBACK
     if _model is not None or _FALLBACK:
         return
     try:
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
 
-        # Suppress the "`clean_up_tokenization_spaces` was ignored" warning
-        # triggered by the underlying transformers tokenizer. Harmless noise.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            _model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+        # DefaultEmbedding == BAAI/bge-small-en-v1.5 (fastembed's default).
+        _model = TextEmbedding()
     except (ImportError, OSError):
         _FALLBACK = True
 
@@ -59,12 +54,12 @@ def embed_texts(texts: list[str]) -> "np.ndarray | None":
     _load_model()
     if _FALLBACK or _model is None:
         return None
-    return _model.encode(
-        texts,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
+    import numpy as np
+
+    if not texts:
+        return np.zeros((0, 384), dtype=np.float32)
+    # fastembed yields embeddings one at a time; collect into a matrix.
+    return np.array(list(_model.embed(texts)), dtype=np.float32)
 
 
 def embed_query(query: str) -> "np.ndarray | None":
@@ -76,10 +71,7 @@ def embed_query(query: str) -> "np.ndarray | None":
     _load_model()
     if _FALLBACK or _model is None:
         return None
-    vec = _model.encode(
-        [_QUERY_PREFIX + query],
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-    return vec[0]  # (384,)
+    import numpy as np
+
+    vecs = list(_model.query_embed(_QUERY_PREFIX + query))
+    return vecs[0]
