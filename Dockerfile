@@ -11,6 +11,9 @@ RUN apt-get update -qq && apt-get install -y -qq \
 # ── Install Python deps ────────────────────────────────────────
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
+# UV_NO_CACHE=1: don't bake the wheel download cache into the image
+# (without this, /root/.cache/uv bloats the image by ~5 GB).
+ENV UV_NO_CACHE=1
 # sentence-transformers[onnx] uses ONNX Runtime (~50 MB) instead of
 # PyTorch (~526 MB CUDA wheel). No torch = no nvidia-* / CUDA bloat.
 RUN uv sync --frozen --no-dev
@@ -27,6 +30,8 @@ RUN uv run python -c "\
 from fastembed import TextEmbedding; \
 TextEmbedding(); \
 print('Model downloaded')"
+# Belt-and-suspenders: clear any cache that slipped through.
+RUN rm -rf /root/.cache/uv
 
 # ── Expose + start ─────────────────────────────────────────────
 EXPOSE 8000
