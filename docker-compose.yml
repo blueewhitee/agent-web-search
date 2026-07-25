@@ -11,3 +11,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  api:
+    build: .
+    container_name: agent-search-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+    depends_on:
+      searxng:
+        condition: service_healthy
