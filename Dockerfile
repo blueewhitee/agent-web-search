@@ -21,9 +21,11 @@ COPY main.py ./
 COPY conftest.py ./
 
 # ── Pre-download embedding model (D-018) ───────────────────────
+# fastembed downloads model to ~/.cache/fastembed on first call.
+# Running it at build time ensures zero latency on first request.
 RUN uv run python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('BAAI/bge-small-en-v1.5'); \
+from fastembed import TextEmbedding; \
+TextEmbedding(); \
 print('Model downloaded')"
 
 # ── Expose + start ─────────────────────────────────────────────
