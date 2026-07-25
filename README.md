@@ -28,8 +28,8 @@ curl -X POST http://localhost:8000/search \
 | Param | Default | Description |
 |---|---|---|
 | `query` | — | Search query (1–1000 chars) |
-| `include_content` | false | Return extracted + ranked chunks |
-| `render_js` | false | Enable crawl4ai for JS-heavy pages |
+| `include_content` | false | Return extracted text + ranked chunks |
+| `render_js` | false | JS rendering via crawl4ai (pip install crawl4ai, not included by default) |
 
 ### Response
 
