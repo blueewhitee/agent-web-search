@@ -4,13 +4,6 @@ Self-hosted search API for AI agents. Think Tavily/Exa — free, self-hostable, 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
----
-
-**Documentation**: README (this file)
-
-**Source Code**: [https://github.com/blueewhitee/agent-web-search](https://github.com/blueewhitee/agent-web-search)
-
----
 
 ## Quick start
 
