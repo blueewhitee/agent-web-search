@@ -122,10 +122,6 @@ tests/
 main.py                 # FastAPI app + lifespan
 ```
 
-## Why not agent-search?
-
-Our 6-stage pipeline from scratch (~1.5K LOC) is the interview artifact. [agent-search](https://github.com/brcrusoe72/agent-search) returns full-page text blobs to the LLM. We chunk, embed, rank, and return parent-context windows — the same way production RAG systems work.
-
 ## License
 
 MIT
