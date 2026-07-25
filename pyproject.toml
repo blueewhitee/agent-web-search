@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "trafilatura>=2.1",
     "readability-lxml>=0.8",
+    "sentence-transformers>=5.6.1",
 ]
 
 [dependency-groups]

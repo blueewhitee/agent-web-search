@@ -25,7 +25,13 @@ def extract_text(html: str, url: str | None = None) -> str | None:
 
 def _try_trafilatura(html: str, url: str | None) -> str | None:
     from trafilatura import extract  # lazy import: trafilatura is heavy
-    return extract(html, url=url, output_format="txt", fast=True,
+    # output_format="markdown": preserves headings, bullets, and tables
+    # that plain text loses. Markdown is what downstream LLMs read best
+    # (2026 benchmarks: markdown is 35-38% more token-efficient than JSON
+    # for LLM context, and LLMs are trained heavily on it). The calling
+    # harness decides the final prompt format; we just hand it structured
+    # text rather than flattened prose.
+    return extract(html, url=url, output_format="markdown", fast=True,
                    include_comments=False, include_tables=True)
 
 

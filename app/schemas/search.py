@@ -19,9 +19,33 @@ class SearchResult(BaseModel):
     # extraction succeeded; None when extraction failed or the caller didn't opt in.
     # Populated only when SearchRequest.include_content=True.
     raw_content: str | None = None
+    # Stage 4: chunks for retrieval. Populated when include_content=True.
+    chunks: list[dict] | None = None
+
+
+class ChunkSource(BaseModel):
+    """Provenance: where this chunk came from."""
+    url: str
+    title: str
+    searxng_score: float  # D-003 upstream metadata
+
+
+class RankedChunk(BaseModel):
+    """A ranked chunk returned to the caller (D-008, D-013).
+
+    text:        ~256 tokens — the embedding-targeted snippet.
+    parent_text: ~512 tokens — full context for the LLM to read.
+    score:       cosine similarity against the query (D-003).
+    source:      provenance metadata (url, title, searxng_score).
+    """
+    text: str
+    parent_text: str
+    chunk_index: int
+    score: float
+    source: ChunkSource
 
 
 class SearchResponse(BaseModel):
     query: str
-    results: list[SearchResult]
+    ranked_chunks: list[RankedChunk] = []
     unresponsive_engines: list[str] = []

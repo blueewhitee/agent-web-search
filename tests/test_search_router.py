@@ -1,11 +1,16 @@
-"""E2E tests for the /search router with Stage 3 extraction (D-002, D-006).
+"""E2E tests for the /search router with Stage 3–5 pipeline.
 
 MockTransport-based — no network, no Docker. Builds a throwaway FastAPI app
-with a mock lifespan that wires real SearXNGService + FetchService onto an
-httpx client backed by an AsyncMockTransport. Proves:
-  - include_content=true → raw_content holds extracted plain text, not HTML
-  - include_content=false (default) → raw_content is null
-  - extraction failure (<200 chars) → low_confidence=True even when fetch OK
+with a mock lifespan that wires real services onto an httpx client backed by
+an AsyncMockTransport. Tests use the fallback path (no embedding model loaded)
+so all ranked chunks get score=0.0.
+
+Tests verify:
+  - include_content=true → ranked_chunks populated with extracted text
+  - include_content=false → ranked_chunks empty
+  - extraction failure → page contributes no chunks
+  - scrubber redacts injection in chunk parent_text
+  - ranked_chunks have correct shape (text, parent_text, score, source)
 """
 
 from contextlib import asynccontextmanager
@@ -41,8 +46,7 @@ _SHORT_HTML = "<html><body><p>Short</p></body></html>"
 
 
 class _AsyncMockTransport(httpx.AsyncBaseTransport):
-    """Async transport that delegates to a handler — same pattern as
-    test_fetch_service.py."""
+    """Async transport that delegates to a handler."""
 
     def __init__(self, handler):
         self._handler = handler
@@ -52,11 +56,9 @@ class _AsyncMockTransport(httpx.AsyncBaseTransport):
 
 
 async def _handler(request):
-    # robots.txt -> empty (allow all), for any host
     if request.url.path == "/robots.txt":
         return httpx.Response(200, text="")
     host = request.url.host
-    # SearXNG JSON endpoint
     if host == "searxng.test":
         return httpx.Response(
             200,
@@ -91,6 +93,7 @@ def app():
     settings.searxng_base_url = "http://searxng.test"
     settings.per_url_timeout = 3.0
     settings.batch_deadline = 5.0
+    settings.top_k_return = 3
     transport = _AsyncMockTransport(_handler)
 
     @asynccontextmanager
@@ -116,8 +119,10 @@ def app():
     return a
 
 
-class TestSearchRouterStage3:
-    def test_include_content_returns_extracted_text_not_html(self, app):
+class TestSearchRouterStage5:
+    """Stage 5 integration: chunk → rank → ranked_chunks response."""
+
+    def test_include_content_returns_ranked_chunks(self, app):
         with TestClient(app) as client:
             resp = client.post(
                 "/search",
@@ -125,49 +130,49 @@ class TestSearchRouterStage3:
             )
         assert resp.status_code == 200
         data = resp.json()
-        by_host = {r["url"].split("//")[1].split("/")[0]: r for r in data["results"]}
+        chunks = data["ranked_chunks"]
 
-        # article.test: fetch OK, extraction succeeds → plain text ≥200 chars
-        art = by_host["article.test"]
-        rc = art["raw_content"]
-        assert rc is not None, "article.test should have extracted text"
-        assert len(rc) >= 200
-        # Plain text, no HTML tags
-        assert "<html>" not in rc.lower()
-        assert "<p>" not in rc.lower()
-        assert "<article>" not in rc.lower()
-        # Fetch succeeded → low_confidence should be False
-        assert art["low_confidence"] is False
+        # article.test succeeded → at least one chunk
+        assert len(chunks) >= 1
 
-    def test_include_content_false_raw_content_null(self, app):
+        for c in chunks:
+            pt = c["parent_text"]
+            assert pt is not None
+            assert len(pt) >= 200
+            # Extracted plain text, no HTML tags
+            assert "<html>" not in pt.lower()
+            assert "<p>" not in pt.lower()
+            assert "<article>" not in pt.lower()
+            # Source metadata present
+            assert c["source"]["url"] == "https://article.test/page"
+            assert c["source"]["title"] == "Article"
+
+    def test_include_content_false_ranked_chunks_empty(self, app):
         with TestClient(app) as client:
             resp = client.post(
-                "/search", json={"query": "asyncio"}  # include_content defaults False
+                "/search", json={"query": "asyncio"}
             )
         assert resp.status_code == 200
-        for r in resp.json()["results"]:
-            assert r["raw_content"] is None
+        data = resp.json()
+        assert data["ranked_chunks"] == []
 
-    def test_extraction_failure_sets_low_confidence(self, app):
+    def test_extraction_failure_excludes_page(self, app):
+        """short.test (<200 chars) → extraction fails → contributes no chunks."""
         with TestClient(app) as client:
             resp = client.post(
                 "/search",
                 json={"query": "asyncio", "include_content": True},
             )
         assert resp.status_code == 200
-        by_host = {r["url"].split("//")[1].split("/")[0]: r for r in resp.json()["results"]}
-        # short.test: fetch succeeds (200 OK) but body is "Short" → <200 chars
-        # → extraction returns None → low_confidence=True (additive signal)
-        short = by_host["short.test"]
-        assert short["low_confidence"] is True
-        # And raw_content is None because extraction failed (even though
-        # include_content=True was requested)
-        assert short["raw_content"] is None
+        chunks = resp.json()["ranked_chunks"]
 
+        # All chunks come from article.test only (short.test failed extraction)
+        assert len(chunks) >= 1
+        for c in chunks:
+            assert c["source"]["url"] == "https://article.test/page"
 
 
 # ---- Stage 3.5 scrubber E2E (D-010) -------------------------------------------
-# Self-contained: own handler + fixture so existing Stage 3 tests are untouched.
 
 _INJECT_BODY = (
     "This article discusses prompt engineering best practices and common "
@@ -247,11 +252,66 @@ class TestSearchRouterStage35:
                 json={"query": "prompt injection", "include_content": True},
             )
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["results"]) >= 1
-        rc = data["results"][0]["raw_content"]
-        assert rc is not None
+        chunks = resp.json()["ranked_chunks"]
+        assert len(chunks) >= 1
+        pt = chunks[0]["parent_text"]
+        assert pt is not None
         # Injection payload must be redacted by Stage 3.5 scrubber
-        assert "[REDACTED]" in rc
-        assert "ignore all previous instructions" not in rc.lower()
-        assert "system prompt" not in rc.lower()
+        assert "[REDACTED]" in pt
+        assert "ignore all previous instructions" not in pt.lower()
+        assert "system prompt" not in pt.lower()
+
+
+# ── Router validation ────────────────────────────────────────
+
+
+class TestRouterValidation:
+    def test_empty_query_422(self, app):
+        with TestClient(app) as client:
+            resp = client.post("/search", json={"query": ""})
+        assert resp.status_code == 422
+
+    def test_missing_query_422(self, app):
+        with TestClient(app) as client:
+            resp = client.post("/search", json={})
+        assert resp.status_code == 422
+
+    def test_query_too_long_422(self, app):
+        with TestClient(app) as client:
+            resp = client.post("/search", json={"query": "x" * 2000})
+        assert resp.status_code == 422
+
+    def test_ranked_chunks_have_expected_shape(self, app):
+        """Every ranked chunk has text, parent_text, chunk_index, score, source."""
+        with TestClient(app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "asyncio", "include_content": True},
+            )
+        assert resp.status_code == 200
+        for c in resp.json()["ranked_chunks"]:
+            assert "text" in c
+            assert "parent_text" in c
+            assert "chunk_index" in c
+            assert "score" in c
+            assert "source" in c
+            s = c["source"]
+            assert s["url"]
+            assert s["title"]
+            assert "searxng_score" in s
+
+    def test_ranked_chunks_empty_when_no_content(self, app):
+        with TestClient(app) as client:
+            resp = client.post("/search", json={"query": "asyncio"})
+        assert resp.status_code == 200
+        assert resp.json()["ranked_chunks"] == []
+
+    def test_ranked_chunks_under_top_k(self, app):
+        """Number of ranked chunks never exceeds top_k_return."""
+        with TestClient(app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "asyncio", "include_content": True},
+            )
+        assert resp.status_code == 200
+        assert len(resp.json()["ranked_chunks"]) <= 3

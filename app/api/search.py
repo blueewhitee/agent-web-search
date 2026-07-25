@@ -4,8 +4,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from app.core.config import settings
-from app.schemas.search import SearchRequest, SearchResponse
+from app.schemas.search import ChunkSource, RankedChunk, SearchRequest, SearchResponse
+from app.services.chunking_service import chunk_text
 from app.services.extraction_service import extract_text
+from app.services.ranking_service import rank_chunks
 from app.services.scrubber_service import scrub_content
 from app.services.fetch_service import FetchService
 from app.services.searxng_service import SearXNGService
@@ -97,10 +99,60 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
             scrub_result = scrub_content(r.raw_content)
             r.raw_content = scrub_result.content
 
-    # D-013: slice to top_k_return. Arbitrary but deterministic for Stage 2;
-    # Stage 5 (not built) will replace this with semantic ranking.
+    # Stage 4: chunk extracted text for retrieval
+    for r in results:
+        if r.raw_content is not None:
+            chunks = chunk_text(r.raw_content)
+            r.chunks = [
+                {"text": c.text, "parent_text": c.parent_text, "chunk_index": c.chunk_index}
+                for c in chunks
+            ]
+
+    # Stage 5: pool chunks across all results, rank globally, return top-K
+    all_chunks = []
+    for r in results:
+        if r.chunks:
+            for c in r.chunks:
+                all_chunks.append({
+                    **c,
+                    "source": {
+                        "url": r.url,
+                        "title": r.title,
+                        "searxng_score": r.searxng_score,
+                    },
+                })
+
+    ranked = rank_chunks(body.query, all_chunks, top_k=settings.top_k_return)
+
+    if ranked is None:
+        # Model unavailable — degrade to flat D-013 fallback
+        ranked = []
+        for r in results[: settings.top_k_return]:
+            for c in r.chunks or []:
+                ranked.append({
+                    **c,
+                    "score": 0.0,
+                    "source": {
+                        "url": r.url,
+                        "title": r.title,
+                        "searxng_score": r.searxng_score,
+                    },
+                })
+        ranked = ranked[: settings.top_k_return]
+
+    ranked_chunks = [
+        RankedChunk(
+            text=c["text"],
+            parent_text=c["parent_text"],
+            chunk_index=c["chunk_index"],
+            score=c["score"],
+            source=ChunkSource(**c["source"]),
+        )
+        for c in ranked
+    ]
+
     return SearchResponse(
         query=body.query,
-        results=results[: settings.top_k_return],
+        ranked_chunks=ranked_chunks,
         unresponsive_engines=unresponsive,
     )
