@@ -5,6 +5,11 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     render_js: bool = False         # D-006: opt-in crawl4ai per request
     include_content: bool = False   # D-002: opt-in raw_content in response
+    # D-0XX: optional SearXNG category override. When None (default), the
+    # router auto-detects intent and routes to news/it/general accordingly.
+    # Explicitly set to e.g. ["news"] to force a specific category.
+    categories: list[str] | None = None
+    time_range: str | None = None   # "day"|"week"|"month"|"year" (news only)
 
 
 class SearchResult(BaseModel):

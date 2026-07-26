@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "nature-search": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "mcp_server.server"
+      ],
+      "env": {
+        "NATURE_SE_API_URL": "http://localhost:8000"
+      },
+      "directTools": true
+    }
+  }
+}

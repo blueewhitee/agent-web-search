@@ -11,5 +11,49 @@ search:
     - html
     - json
 
+# Fail fast instead of hanging on blocked/slow upstream engines.
+# These overrides apply on top of use_default_settings.
+outgoing:
+  request_timeout: 5.0      # per-engine timeout (default is much higher)
+  max_request_timeout: 10.0  # absolute hard cap for the whole request
+
+# Disable scrapers that hang/rate-limit agents (these were the ones that
+# timed out: brave, google, startpage). Keep sanctioned-API engines and
+# lower-blocking general engines instead.
+engines:
+  # --- disabled (slow / blocks bots / caused our >30s timeouts) ---
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: yahoo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
+
+  # --- general web (kept; less aggressive bot-blocking) ---
+  - name: duckduckgo
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: qwant
+    disabled: false
+
+  # --- sanctioned APIs / topic-specific (never scrape, never block you) ---
+  - name: wikipedia
+    disabled: false
+  - name: wikidata
+    disabled: false
+  - name: github
+    disabled: false
+  - name: gitlab
+    disabled: false
+  - name: stackoverflow
+    disabled: false
+  - name: arxiv
+    disabled: false
+
 limiter:
   enabled: false

@@ -315,3 +315,124 @@ class TestRouterValidation:
             )
         assert resp.status_code == 200
         assert len(resp.json()["ranked_chunks"]) <= 3
+
+
+# ── Intent routing integration (D-0XX) ────────────────────────
+
+
+class _RecordingTransport(httpx.AsyncBaseTransport):
+    """Transport that records the last SearXNG search URL and returns
+    enough fake results for the downstream pipeline to complete."""
+
+    def __init__(self) -> None:
+        self.last_searxng_url: str = ""
+
+    async def handle_async_request(self, request: httpx.Request):
+        if request.url.host == "searxng.test":
+            self.last_searxng_url = str(request.url)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://article.test/page",
+                            "title": "Test Article",
+                            "content": "test snippet",
+                            "score": 1.0,
+                        },
+                    ],
+                    "unresponsive_engines": [],
+                },
+            )
+        if request.url.host == "article.test":
+            return httpx.Response(200, text=_ARTICLE_HTML)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="")
+        return httpx.Response(404, text="no")
+
+
+@pytest.fixture
+def recording_app():
+    """App with recording transport — inspect last_searxng_url after a request."""
+    settings = Settings()
+    settings.searxng_base_url = "http://searxng.test"
+    settings.per_url_timeout = 3.0
+    settings.batch_deadline = 5.0
+    settings.top_k_return = 3
+    transport = _RecordingTransport()
+
+    @asynccontextmanager
+    async def lifespan(a: FastAPI):
+        async with httpx.AsyncClient(transport=transport) as client:
+            a.state.searxng_service = SearXNGService(
+                base_url=settings.searxng_base_url,
+                client=client,
+                timeout=settings.searxng_timeout,
+            )
+            a.state.robots_cache = RobotsCache(
+                client=client, user_agent=settings.user_agent
+            )
+            a.state.fetch_service = FetchService(
+                client=client,
+                robots=a.state.robots_cache,
+                settings=settings,
+            )
+            yield
+
+    a = FastAPI(lifespan=lifespan)
+    a.include_router(search_router)
+    a.state._recording_transport = transport
+    return a
+
+
+class TestIntentRouting:
+    """News-intent queries route to categories=news; code-intent to categories=it."""
+
+    def test_news_query_routes_to_news_category(self, recording_app):
+        transport: _RecordingTransport = recording_app.state._recording_transport
+        with TestClient(recording_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "latest news on OpenAI"},
+            )
+        assert resp.status_code == 200
+        assert "categories=news" in transport.last_searxng_url
+        assert "time_range=week" in transport.last_searxng_url
+
+    def test_code_query_routes_to_it_category(self, recording_app):
+        transport: _RecordingTransport = recording_app.state._recording_transport
+        with TestClient(recording_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "python asyncio example"},
+            )
+        assert resp.status_code == 200
+        assert "categories=it" in transport.last_searxng_url
+
+    def test_general_query_uses_default(self, recording_app):
+        transport: _RecordingTransport = recording_app.state._recording_transport
+        with TestClient(recording_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "capital of France"},
+            )
+        assert resp.status_code == 200
+        assert "categories=general" in transport.last_searxng_url
+
+    def test_explicit_categories_override_auto_detect(self, recording_app):
+        """When SearchRequest.categories is set, use it directly."""
+        transport: _RecordingTransport = recording_app.state._recording_transport
+        with TestClient(recording_app) as client:
+            resp = client.post(
+                "/search",
+                json={
+                    "query": "python asyncio example",
+                    "categories": ["general"],
+                    "time_range": "month",
+                },
+            )
+        assert resp.status_code == 200
+        # Override: the code query would normally route to "it", but explicit
+        # categories takes precedence.
+        assert "categories=general" in transport.last_searxng_url
+        assert "time_range=month" in transport.last_searxng_url

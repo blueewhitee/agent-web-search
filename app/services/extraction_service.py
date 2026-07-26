@@ -12,14 +12,39 @@ charset_normalizer (https://github.com/adbar/trafilatura/blob/v2.1.0/trafilatura
 _MIN_TEXT_LEN = 200  # D-006 sub-topic 2: "JS-page tell" threshold
 
 
+def _looks_like_shell(text: str) -> bool:
+    """Heuristic: index / aggregator page (author-name lists, link soup).
+
+    Targets a failure mode where SearXNG returns an aggregator topic page or
+    category index and trafilatura extracts *something* (author names, short
+    link captions) but it is not a real article body.
+
+    The 200-char floor in ``extract_text`` catches empty shells.  This check
+    catches slightly larger shells that pass the floor but are still junk.
+
+    Returns True when the text looks more like an index than prose.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) <= 2:
+        return False  # too little to judge; the 200-char floor catches empties
+    short = sum(1 for ln in lines if len(ln.strip()) < 30)
+    if len(lines) >= 6 and short / len(lines) >= 0.6:
+        return True
+    # author-list signature ("By Ashley Capoot", "By ...")
+    by_lines = sum(1 for ln in lines if ln.strip().lower().startswith("by "))
+    if by_lines >= 4:
+        return True
+    return False
+
+
 def extract_text(html: str, url: str | None = None) -> str | None:
     """Two-tier extraction. Returns text ≥ 200 chars, else None."""
     text = _try_trafilatura(html, url)
     if text is not None and len(text) >= _MIN_TEXT_LEN:
-        return text
+        return text if not _looks_like_shell(text) else None
     text = _try_readability(html)
     if text is not None and len(text) >= _MIN_TEXT_LEN:
-        return text
+        return text if not _looks_like_shell(text) else None
     return None
 
 

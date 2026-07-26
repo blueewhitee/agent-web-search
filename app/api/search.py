@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.schemas.search import ChunkSource, RankedChunk, SearchRequest, SearchResponse
 from app.services.chunking_service import chunk_text
 from app.services.extraction_service import extract_text
+from app.services.intent_service import detect
 from app.services.ranking_service import rank_chunks
 from app.services.scrubber_service import scrub_content
 from app.services.fetch_service import FetchService
@@ -27,10 +28,17 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
     searxng: SearXNGService = request.app.state.searxng_service
     fetch: FetchService = request.app.state.fetch_service
 
-    # Stage 1: SearXNG (error map from D-014)
+    # Stage 1: detect intent and route to SearXNG category (D-0XX)
+    intent = detect(body.query)
+    categories = body.categories if body.categories is not None else list(intent.categories)
+    time_range = body.time_range if body.time_range is not None else intent.time_range
+
     try:
         results, unresponsive = await searxng.search(
-            body.query, top_k=settings.top_k_fetch
+            body.query,
+            top_k=settings.top_k_fetch,
+            categories=categories,
+            time_range=time_range,
         )
     except httpx.TimeoutException:
         raise HTTPException(

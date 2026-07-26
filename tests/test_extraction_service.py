@@ -1,10 +1,11 @@
 """Tests for Stage 3 text extraction (D-002, D-006 sub-topic 2).
 
 Covers the two-tier fallback contract: trafilatura primary, readability-lxml
-fallback, ≥200-char threshold. No network — pure function over HTML strings.
+fallback, ≥200-char threshold, and the density filter that rejects
+index/aggregator shells. No network — pure function over HTML strings.
 """
 
-from app.services.extraction_service import extract_text
+from app.services.extraction_service import _looks_like_shell, extract_text
 
 # ~300 chars of lorem-ish article body, enough to clear the 200-char threshold.
 _LONG_BODY = (
@@ -65,3 +66,52 @@ class TestExtractText:
         result = extract_text(_GOOD_HTML, url="https://example.com/article")
         assert result is not None
         assert len(result) >= 200
+
+
+class TestDensityFilter:
+    """_looks_like_shell rejects index / aggregator pages (D-0XX)."""
+
+    def test_short_line_ratio_triggers(self):
+        # Many short lines (<30 chars each), few long ones → shell.
+        text = "\n".join(
+            ["By Alice", "By Bob", "By Charlie", "By Diana",
+             "By Eve", "By Frank",  # 6 short lines
+             "A longer paragraph that provides some actual body content so the"
+             " overall text exceeds the character floor but the pattern is still"
+             " overwhelmingly a list of author names."]
+        )
+        assert _looks_like_shell(text) is True
+
+    def test_by_line_signature(self):
+        # Four or more lines starting with "By " → author-list shell.
+        text = "\n".join([
+            "By Ashley Capoot", "By Teddy Rosenbluth",
+            "By Erin Rode", "By Lucas Ropek",
+        ])
+        assert _looks_like_shell(text) is True
+
+    def test_by_lines_below_threshold_passes(self):
+        text = "By John Doe\nIntroduction paragraph here.\nAnother line."
+        assert _looks_like_shell(text) is False
+
+    def test_few_short_lines_does_not_trigger(self):
+        # 3 short lines out of 4 — under the 6-line AND 60% threshold.
+        text = "\n".join(["short", "also short", "tiny", "A longer paragraph"])
+        assert _looks_like_shell(text) is False
+
+    def test_normal_article_passes(self):
+        # Real prose with paragraph-length lines is not a shell.
+        text = (
+            "Python's asyncio module provides infrastructure for writing "
+            "single-threaded concurrent code using coroutines, multiplexing "
+            "I/O access over sockets and other resources that run event loops.\n"
+            "It is the foundation for modern async web frameworks like "
+            "FastAPI and Starlette, built on top of low-level APIs.\n"
+            "The event loop schedules tasks and handles I/O multiplexing.\n"
+        )
+        assert _looks_like_shell(text) is False
+
+    def test_very_few_lines_passthrough(self):
+        # 2 lines, both short — too few to judge; let 200-char floor decide.
+        text = "short\ntoo short"
+        assert _looks_like_shell(text) is False

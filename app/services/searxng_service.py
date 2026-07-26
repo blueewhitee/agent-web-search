@@ -22,7 +22,11 @@ class SearXNGService:
         self._timeout = timeout
 
     async def search(
-        self, query: str, top_k: int = 5
+        self,
+        query: str,
+        top_k: int = 5,
+        categories: list[str] | tuple[str, ...] | None = None,
+        time_range: str | None = None,
     ) -> tuple[list[SearchResult], list[str]]:
         """Run a query against SearXNG and return (normalized results, unresponsive engines).
 
@@ -30,8 +34,14 @@ class SearXNGService:
         - Individual result missing `url` → skipped (SearXNG can return malformed rows).
         - HTTP error → let `raise_for_status()` bubble; the router maps it to 502.
         - Timeout → caller (router) catches `httpx.TimeoutException` → 504.
+        - ``categories`` / ``time_range`` are optional; when both are None (default)
+          behaviour is identical to today (SearXNG defaults to `general` category).
         """
-        params = {"q": query, "format": "json"}
+        params: dict = {"q": query, "format": "json"}
+        if categories:
+            params["categories"] = ",".join(categories)
+        if time_range:
+            params["time_range"] = time_range
         response = await self._client.get(
             f"{self._base_url}/search", params=params, timeout=self._timeout
         )
