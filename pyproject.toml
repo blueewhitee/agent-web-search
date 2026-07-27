@@ -12,6 +12,8 @@ dependencies = [
     "readability-lxml>=0.8",
     "fastembed>=0.7",
     "mcp[cli]>=1.28,<2",
+    "google-genai>=2.14.0",
+    "curl-cffi>=0.15.0",
 ]
 
 [dependency-groups]

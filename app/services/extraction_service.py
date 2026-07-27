@@ -10,6 +10,7 @@ charset_normalizer (https://github.com/adbar/trafilatura/blob/v2.1.0/trafilatura
 """
 
 _MIN_TEXT_LEN = 200  # D-006 sub-topic 2: "JS-page tell" threshold
+_MAX_HTML_LEN = 100_000  # D-025: cap HTML before trafilatura (15x latency win, 100% content retained)
 
 
 def _looks_like_shell(text: str) -> bool:
@@ -39,6 +40,13 @@ def _looks_like_shell(text: str) -> bool:
 
 def extract_text(html: str, url: str | None = None) -> str | None:
     """Two-tier extraction. Returns text ≥ 200 chars, else None."""
+    # Cap input HTML before parsing. trafilatura/lxml parse cost scales with
+    # HTML size; a 465KB page takes ~2.4s vs ~0.16s at 100KB (15x). Article
+    # body is almost always in the first 100KB — nav/boilerplate/footer come
+    # later. Empirically verified (D-025): 100KB retains 100% of article text
+    # on docs.python.org; 50KB loses 42%. Safe for quality, huge for latency.
+    if len(html) > _MAX_HTML_LEN:
+        html = html[:_MAX_HTML_LEN]
     text = _try_trafilatura(html, url)
     if text is not None and len(text) >= _MIN_TEXT_LEN:
         return text if not _looks_like_shell(text) else None

@@ -32,6 +32,27 @@ class _AsyncMockTransport(httpx.AsyncBaseTransport):
 ROBOTS_EMPTY = ""  # allow-all
 
 
+class _MockCurlSession:
+    """Mimics curl_cffi.AsyncSession for tests — no network, no curl_cffi dep.
+
+    Production fetch_one uses curl_cffi (D-026); tests inject this mock via
+    the `curl_session` param so the graceful-degradation contract is tested
+    without curl_cffi installed. Returns httpx.Response objects, which expose
+    the same .status_code / .text attributes curl_cffi responses do, so the
+    production code paths (r.status_code >= 400, r.text) work unchanged.
+    """
+
+    def __init__(self, handler):
+        self._handler = handler
+
+    async def get(self, url, headers=None, allow_redirects=True):
+        request = httpx.Request("GET", url, headers=headers or {})
+        return await self._handler(request)
+
+    async def close(self):
+        pass
+
+
 async def _handler(request):
     # robots.txt requests -> empty (allow all)
     if request.url.path == "/robots.txt":
@@ -62,7 +83,10 @@ async def fetch_service(settings):
     transport = _AsyncMockTransport(_handler)
     async with httpx.AsyncClient(transport=transport) as client:
         robots = RobotsCache(client=client, user_agent=settings.user_agent, timeout=1.0)
-        yield FetchService(client=client, robots=robots, settings=settings)
+        mock_curl = _MockCurlSession(_handler)
+        yield FetchService(
+            client=client, robots=robots, settings=settings, curl_session=mock_curl
+        )
 
 
 class TestFetchOne:
@@ -71,34 +95,36 @@ class TestFetchOne:
         r = await fetch_service.fetch_one("https://ok.test/x")
         assert r.low_confidence is False
         assert r.html == "<html>ok</html>"
-        assert r.method == "httpx"
+        assert r.method == "curl_cffi"
         assert r.status == 200
 
     @pytest.mark.asyncio
     async def test_404_low_confidence(self, fetch_service):
         r = await fetch_service.fetch_one("https://notfound.test/x")
         assert r.low_confidence is True
-        assert r.method == "httpx-failed"
+        assert r.method == "curl_cffi-failed"
         assert r.html is None
 
     @pytest.mark.asyncio
     async def test_timeout_low_confidence(self, fetch_service):
         r = await fetch_service.fetch_one("https://slow.test/x")
         assert r.low_confidence is True
-        assert r.method == "httpx-failed"
+        assert r.method == "curl_cffi-failed"
 
     @pytest.mark.asyncio
     async def test_connection_error_low_confidence(self, fetch_service):
+        # The mock handler raises httpx.ConnectError; the production code catches
+        # broad Exception → degrades to low_confidence. Verify the contract.
         r = await fetch_service.fetch_one("https://drop.test/x")
         assert r.low_confidence is True
-        assert r.method == "httpx-failed"
+        assert r.method == "curl_cffi-failed"
 
     @pytest.mark.asyncio
-    async def test_render_js_falls_back_to_httpx(self, fetch_service):
-        # crawl4ai is not installed -> ImportError -> httpx fallback.
+    async def test_render_js_falls_back_to_curl_cffi(self, fetch_service):
+        # crawl4ai is not installed -> ImportError -> curl_cffi fallback.
         r = await fetch_service.fetch_one("https://ok.test/x", render_js=True)
         assert r.low_confidence is False
-        assert r.method == "httpx"
+        assert r.method == "curl_cffi"
         assert r.html == "<html>ok</html>"
 
 
@@ -115,7 +141,7 @@ class TestFetchMany:
         assert results[0].low_confidence is False
         assert results[1].url == "https://slow.test/x"
         assert results[1].low_confidence is True
-        assert results[1].method == "httpx-failed" or results[1].method == "batch-timeout"
+        assert results[1].method == "curl_cffi-failed" or results[1].method == "batch-timeout"
 
     @pytest.mark.asyncio
     async def test_empty_urls(self, fetch_service):

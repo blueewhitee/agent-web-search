@@ -55,6 +55,32 @@ class _AsyncMockTransport(httpx.AsyncBaseTransport):
         return await self._handler(request)
 
 
+class _MockCurlSession:
+    """Test mock for curl_cffi.AsyncSession (D-026).
+
+    Production fetch_one uses curl_cffi for page fetches (anti-bot sites block
+    httpx on TLS fingerprint, D-026). These router tests are network-free, so
+    inject this mock — it routes curl_cffi `.get` calls through the same httpx
+    handler the transport uses. Returns httpx.Response objects, which expose
+    the same .status_code / .text attributes curl_cffi responses do, so the
+    production code paths (r.status_code >= 400, r.text) work unchanged.
+    """
+
+    def __init__(self, handler):
+        self._handler = handler
+
+    async def get(self, url, headers=None, allow_redirects=True):
+        request = httpx.Request("GET", url, headers=headers or {})
+        # Accept either a plain async handler (request -> response) or an
+        # httpx transport object (which exposes .handle_async_request).
+        if hasattr(self._handler, "handle_async_request"):
+            return await self._handler.handle_async_request(request)
+        return await self._handler(request)
+
+    async def close(self):
+        pass
+
+
 async def _handler(request):
     if request.url.path == "/robots.txt":
         return httpx.Response(200, text="")
@@ -111,6 +137,7 @@ def app():
                 client=client,
                 robots=a.state.robots_cache,
                 settings=settings,
+                curl_session=_MockCurlSession(_handler),
             )
             yield
 
@@ -236,6 +263,7 @@ def inject_app():
                 client=client,
                 robots=a.state.robots_cache,
                 settings=settings,
+                curl_session=_MockCurlSession(_inject_handler),
             )
             yield
 
@@ -376,6 +404,7 @@ def recording_app():
                 client=client,
                 robots=a.state.robots_cache,
                 settings=settings,
+                curl_session=_MockCurlSession(transport),
             )
             yield
 
@@ -503,6 +532,7 @@ def fallback_app():
                 client=client,
                 robots=a.state.robots_cache,
                 settings=settings,
+                curl_session=_MockCurlSession(transport),
             )
             yield
 
@@ -577,6 +607,7 @@ class TestHardeningFix6Fallback:
                 )
                 a.state.fetch_service = FetchService(
                     client=client, robots=a.state.robots_cache, settings=settings,
+                    curl_session=_MockCurlSession(transport),
                 )
                 yield
 
