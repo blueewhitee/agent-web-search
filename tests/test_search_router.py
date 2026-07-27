@@ -436,3 +436,212 @@ class TestIntentRouting:
         # categories takes precedence.
         assert "categories=general" in transport.last_searxng_url
         assert "time_range=month" in transport.last_searxng_url
+
+
+# ── Hardening fixes (#2 extract timeout, #4 chunk cap, #6 0-result fallback) ──
+
+
+class _FallbackTransport(httpx.AsyncBaseTransport):
+    """Records every SearXNG URL hit. Returns EMPTY for `it`, results for `general`.
+
+    Lets us assert the router's #6 fallback: a code query auto-routes to `it`,
+    gets 0 results, then retries `general`.
+    """
+
+    def __init__(self) -> None:
+        self.searxng_urls: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request):
+        if request.url.host == "searxng.test":
+            url = str(request.url)
+            self.searxng_urls.append(url)
+            if "categories=it" in url:
+                return httpx.Response(200, json={"results": [], "unresponsive_engines": []})
+            # general (or anything else) returns a real result
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://article.test/page",
+                            "title": "Test Article",
+                            "content": "test snippet",
+                            "score": 1.0,
+                        },
+                    ],
+                    "unresponsive_engines": [],
+                },
+            )
+        if request.url.host == "article.test":
+            return httpx.Response(200, text=_ARTICLE_HTML)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="")
+        return httpx.Response(404, text="no")
+
+
+@pytest.fixture
+def fallback_app():
+    settings = Settings()
+    settings.searxng_base_url = "http://searxng.test"
+    settings.per_url_timeout = 3.0
+    settings.batch_deadline = 5.0
+    settings.top_k_return = 3
+    transport = _FallbackTransport()
+
+    @asynccontextmanager
+    async def lifespan(a: FastAPI):
+        async with httpx.AsyncClient(transport=transport) as client:
+            a.state.searxng_service = SearXNGService(
+                base_url=settings.searxng_base_url,
+                client=client,
+                timeout=settings.searxng_timeout,
+            )
+            a.state.robots_cache = RobotsCache(
+                client=client, user_agent=settings.user_agent
+            )
+            a.state.fetch_service = FetchService(
+                client=client,
+                robots=a.state.robots_cache,
+                settings=settings,
+            )
+            yield
+
+    a = FastAPI(lifespan=lifespan)
+    a.include_router(search_router)
+    a.state._fallback_transport = transport
+    return a
+
+
+class TestHardeningFix6Fallback:
+    """#6: auto-detected narrowed category returning 0 results → retry general."""
+
+    def test_empty_it_falls_back_to_general(self, fallback_app):
+        """Code query routes to `it` → 0 results → retry `general` → chunks."""
+        transport: _FallbackTransport = fallback_app.state._fallback_transport
+        with TestClient(fallback_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "python asyncio example", "include_content": True},
+            )
+        assert resp.status_code == 200
+        # Two SearXNG calls: first `it` (empty), then `general` (fallback).
+        assert len(transport.searxng_urls) == 2
+        assert "categories=it" in transport.searxng_urls[0]
+        assert "categories=general" in transport.searxng_urls[1]
+        # Fallback produced real chunks.
+        assert len(resp.json()["ranked_chunks"]) >= 1
+
+    def test_explicit_category_not_overridden_on_empty(self, fallback_app):
+        """Caller explicitly set categories=[it] → empty → NO fallback to general.
+
+        Explicit override is respected even when it returns nothing.
+        """
+        transport: _FallbackTransport = fallback_app.state._fallback_transport
+        with TestClient(fallback_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "python asyncio", "categories": ["it"], "include_content": True},
+            )
+        assert resp.status_code == 200
+        # Only ONE SearXNG call — no fallback because caller set categories.
+        assert len(transport.searxng_urls) == 1
+        assert "categories=it" in transport.searxng_urls[0]
+        assert resp.json()["ranked_chunks"] == []
+
+    def test_general_empty_does_not_self_fallback(self, fallback_app, monkeypatch):
+        """If `general` itself returns empty, don't retry general again."""
+        # Force general to also return empty by swapping the transport's logic.
+        transport = _FallbackTransport()
+
+        async def always_empty(request: httpx.Request):
+            if request.url.host == "searxng.test":
+                transport.searxng_urls.append(str(request.url))
+                return httpx.Response(200, json={"results": [], "unresponsive_engines": []})
+            if request.url.path == "/robots.txt":
+                return httpx.Response(200, text="")
+            return httpx.Response(404, text="no")
+
+        transport.handle_async_request = always_empty
+        settings = Settings()
+        settings.searxng_base_url = "http://searxng.test"
+
+        @asynccontextmanager
+        async def lifespan(a: FastAPI):
+            async with httpx.AsyncClient(transport=transport) as client:
+                a.state.searxng_service = SearXNGService(
+                    base_url=settings.searxng_base_url,
+                    client=client, timeout=settings.searxng_timeout,
+                )
+                a.state.robots_cache = RobotsCache(
+                    client=client, user_agent=settings.user_agent
+                )
+                a.state.fetch_service = FetchService(
+                    client=client, robots=a.state.robots_cache, settings=settings,
+                )
+                yield
+
+        a = FastAPI(lifespan=lifespan)
+        a.include_router(search_router)
+        with TestClient(a) as client:
+            resp = client.post("/search", json={"query": "capital of France"})
+        assert resp.status_code == 200
+        # general query → 1 call, no self-fallback.
+        assert len(transport.searxng_urls) == 1
+        assert resp.json()["ranked_chunks"] == []
+
+
+class TestHardeningFix4ChunkCap:
+    """#4: per-URL chunk count is capped at settings.max_chunks_per_url."""
+
+    def test_chunks_capped_per_url(self, fallback_app, monkeypatch):
+        """Patch chunk_text to return 50 chunks; cap should reduce to max_chunks_per_url."""
+        from app.services.chunking_service import Chunk
+        import app.api.search as search_module
+
+        fake_chunks = [
+            Chunk(text=f"chunk {i} text " * 20, parent_text=f"parent {i} " * 20, chunk_index=i)
+            for i in range(50)
+        ]
+        monkeypatch.setattr(search_module, "chunk_text", lambda _text: fake_chunks)
+        monkeypatch.setattr(search_module.settings, "max_chunks_per_url", 5)
+        monkeypatch.setattr(search_module.settings, "top_k_return", 10)
+
+        with TestClient(fallback_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "python asyncio example", "include_content": True},
+            )
+        assert resp.status_code == 200
+        # 1 source URL, capped to 5 chunks → fallback ranking returns all 5
+        # (top_k_return=10 > 5). Without the cap we'd get 10.
+        assert len(resp.json()["ranked_chunks"]) == 5
+
+
+class TestHardeningFix2ExtractTimeout:
+    """#2: a hung extraction is bounded by settings.extract_timeout."""
+
+    def test_slow_extraction_times_out_to_low_confidence(self, fallback_app, monkeypatch):
+        import time
+        import app.api.search as search_module
+
+        # Return a LONG valid body (>200 chars). WITHOUT the timeout this
+        # would produce chunks; WITH the timeout → None → empty. This cleanly
+        # distinguishes "timed out" from "text too short".
+        _LONG = ("Python asyncio provides single-threaded concurrent code via "
+                 "coroutines and an event loop that schedules tasks. " * 8)
+
+        def slow_extract(_html, _url):
+            time.sleep(3.0)  # well beyond extract_timeout
+            return _LONG
+
+        monkeypatch.setattr(search_module, "extract_text", slow_extract)
+        monkeypatch.setattr(search_module.settings, "extract_timeout", 0.3)
+
+        with TestClient(fallback_app) as client:
+            resp = client.post(
+                "/search",
+                json={"query": "python asyncio example", "include_content": True},
+            )
+        assert resp.status_code == 200
+        # Extraction timed out → None → no chunks contributed.
+        assert resp.json()["ranked_chunks"] == []

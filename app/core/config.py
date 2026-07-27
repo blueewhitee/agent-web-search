@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     batch_deadline: float = 8.0   # D-001: whole fan-out deadline
     top_k_return: int = 3        # D-013: results returned to caller
     render_js_default: bool = False  # D-006
+    # Hardening fixes:
+    extract_timeout: float = 5.0          # per-extraction deadline (trafilatura/lxml hang guard)
+    max_chunks_per_url: int = 20          # cap chunks embedded per page (bound cost on giant docs)
+    searxng_empty_fallback: bool = True   # retry `general` when auto-detected category returns 0
 
 
 settings = Settings()
