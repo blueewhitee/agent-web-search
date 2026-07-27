@@ -2,7 +2,16 @@
 
 <!-- Replace with a real demo screenshot/GIF (MCP tool used inside an agent).
      This is the #1 star-growth signal per 2026 README audits (+35% star rate). -->
-<img src="docs/demo.png" alt="Agent Web Search used as a web_search tool inside Claude Desktop — returning ranked chunks with cosine similarity scores" width="720">
+
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/eefb4a02-c622-4689-a063-6599585d77a7"
+    alt="Agent Web Search used as a web_search tool inside Claude Desktop"
+    width="720"
+  />
+  <br>
+  <em>Agent Web Search used as a <code>web_search</code> tool inside Claude Desktop, returning ranked chunks with cosine similarity scores.</em>
+</p>
 
 # Agent Web Search
 
