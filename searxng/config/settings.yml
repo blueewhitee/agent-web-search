@@ -31,7 +31,7 @@ engines:
   - name: startpage
     disabled: true
   - name: brave
-    disabled: true
+    disabled: false
 
   # --- general web (kept; less aggressive bot-blocking) ---
   - name: duckduckgo

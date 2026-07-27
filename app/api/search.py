@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.schemas.search import ChunkSource, RankedChunk, SearchRequest, SearchResponse
 from app.services.chunking_service import chunk_text
 from app.services.extraction_service import extract_text
-from app.services.intent_service import detect
+from app.services.intent_service import detect, filter_mdn_results
 from app.services.ranking_service import rank_chunks
 from app.services.scrubber_service import scrub_content
 from app.services.fetch_service import FetchService
@@ -80,6 +80,13 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
         and categories != ["general"]
     ):
         results, unresponsive = await _searxng_search(["general"], None)
+
+    # D-026: MDN topical filter. MDN's glossary is indexed for every concept
+    # so `it`-category queries leak MDN's `.python`/`.rust`/etc. glossary hits
+    # for non-web queries ("what is a context manager in python" ->
+    # "What is JavaScript?"). Runs BEFORE dedup+fetch so dropped MDN slots
+    # are backfilled by the next-best non-MDN URL.
+    results = filter_mdn_results(results, body.query)
 
     # Stage 2a: dedup (D-004)
     results = dedup_results(results)

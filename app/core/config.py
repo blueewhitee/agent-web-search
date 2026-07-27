@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     render_js_default: bool = False  # D-006
     # Hardening fixes:
     extract_timeout: float = 5.0          # per-extraction deadline (trafilatura/lxml hang guard)
-    max_chunks_per_url: int = 20          # cap chunks embedded per page (bound cost on giant docs)
+    max_chunks_per_url: int = 10          # cap chunks embedded per page (D-025: 20→10; answer is almost always in first ~5 chunks, tail is footer/related)
     searxng_empty_fallback: bool = True   # retry `general` when auto-detected category returns 0
     # Ranking thresholds (D-024): PLACEHOLDER defaults — calibrate from the
     # evals harness (known-relevant + known-garbage query sets) before trusting.

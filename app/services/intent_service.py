@@ -84,6 +84,87 @@ _FILE_EXT_RE: re.Pattern[str] = re.compile(
 )
 
 
+# ── MDN topical filter (D-025 eval finding: MDN is ~29% of all local hits)
+# ───────────────────────────────────────────────────────────────────
+# MDN's glossary indexes EVERY concept (Python glossary, Rust glossary, etc.)
+# so it gets returned as a catch-all "what is X" hit for non-web queries.
+# Empirically: "what is a context manager in python" -> MDN "What is JavaScript?"
+# "rust borrow checker explained" -> MDN "Using an external spell checker".
+# Drop MDN results unless the query carries a clearly web-tech keyword.
+# Conservative allow-list (default deny): keep MDN only when unambiguous.
+# Word-boundary matching for short tokens (mirrors _token_match above).
+
+_MDN_TOPICAL_KEYWORDS: tuple[str, ...] = (
+    # core web standards / browser APIs
+    "html", "css", "javascript", "js", "dom", "http", "https",
+    "cors", "web api", "webassembly", "wasm", "svg",
+    # shared concepts MDN actually covers well
+    "json", "regex", "regexp", "url", "unicode", "utf-8", "base64",
+    "cookie", "canvas", "flexbox", "grid",
+    # browser feature APIs (ambiguous single words excluded — e.g. "fetch",
+    # "request" — to avoid over-allowing on generic verbs)
+    "websocket", "webgl", "service worker", "localstorage",
+    "sessionstorage", "indexeddb", "pwa",
+)
+
+_MDN_HOST_SUBSTRINGS: tuple[str, ...] = (
+    "developer.mozilla.org",  # canonical MDN
+    "mdn.dev",                # MDN redirects
+)
+
+
+def _is_mdn_topical(query: str) -> bool:
+    """True if the query is plausibly about a topic MDN actually covers.
+
+    Used to decide whether MDN results from the `it` category are worth keeping.
+    Conservative allow-list — default-denies MDN unless a web keyword is
+    present, because MDN glossary hits bleed into non-web queries.
+    """
+    q = query.lower()
+    for tok in _MDN_TOPICAL_KEYWORDS:
+        if _token_match(q, tok):
+            return True
+    return False
+
+
+def filter_mdn_results(results: list, query: str) -> list:
+    """Drop MDN URLs from SearXNG results when the query isn't web-topical.
+
+    Post-SearXNG-Stage-1 filter, runs BEFORE dedup + fetch so dropped MDN
+    slots would be backfilled by subsequent non-MDN URLs (callers that want
+    exactly N results should bump ``top_k_fetch`` — we do NOT auto-backfill
+    inside this filter to keep it pure and side-effect-free).
+
+    Args:
+        results: SearXNG SearchResult-like objects; duck-typed on ``.url``.
+        query:   Raw user query (used for topical classification).
+
+    Returns:
+        Filtered list preserving order. MDN pages dropped only when the query
+        has no web-tech keyword. Always returns results unchanged when query
+        IS topical (e.g., "regex negative lookahead syntax" keeps MDN's
+        regex assertion docs — a known-good MDN hit).
+    """
+    if not results:
+        return results
+    if _is_mdn_topical(query):
+        return results  # query is web-topical → MDN is fair game
+    kept = []
+    for r in results:
+        url = (getattr(r, "url", None) or "").lower()
+        if _is_mdn_url(url):
+            continue  # drop MDN — query isn't web-topical
+        kept.append(r)
+    return kept
+
+
+def _is_mdn_url(url_lower: str) -> bool:
+    for m in _MDN_HOST_SUBSTRINGS:
+        if m in url_lower:
+            return True
+    return False
+
+
 # ── public API ──────────────────────────────────────────────────────────
 
 

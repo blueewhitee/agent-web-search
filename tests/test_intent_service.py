@@ -5,7 +5,12 @@ Pure-function tests — no network, no I/O.
 
 import pytest
 
-from app.services.intent_service import detect, IntentParams
+from app.services.intent_service import (
+    detect,
+    IntentParams,
+    _is_mdn_topical,
+    filter_mdn_results,
+)
 
 
 class TestDetectNews:
@@ -176,3 +181,140 @@ class TestIntentParams:
         p = IntentParams(categories=("it",), time_range=None)
         with pytest.raises(Exception):
             p.categories = ("news",)  # type: ignore[misc]
+
+
+# ── MDN topical filter (D-026) ─────────────────────────────────────────────
+# Backed by the Run-2 eval finding: ~29% of all local results were MDN
+# pages unrelated to the query ("rust borrow checker" -> "Using an external
+# spell checker"; "python 3.13" -> "Firefox 13 release notes"). MDN's
+# glossary indexes every concept, so it bleeds into non-web queries.
+
+
+class _FakeResult:
+    """Duck-typed on .url — same shape SearXNGService returns."""
+
+    def __init__(self, url: str, title: str = "x") -> None:
+        self.url = url
+        self.title = title
+
+
+class TestIsMdnTopical:
+    def test_python_query_not_topical(self):
+        assert _is_mdn_topical("what is a context manager in python") is False
+
+    def test_rust_query_not_topical(self):
+        assert _is_mdn_topical("rust borrow checker explained") is False
+
+    def test_docker_query_not_topical(self):
+        assert _is_mdn_topical("docker compose healthcheck example") is False
+
+    def test_python_release_not_topical(self):
+        assert _is_mdn_topical("python 3.13 release announcement") is False
+
+    def test_general_knowledge_not_topical(self):
+        assert _is_mdn_topical("what is the capital of Australia") is False
+        assert _is_mdn_topical("how does photosynthesis work") is False
+
+    def test_regex_is_topical(self):
+        # CORRECT MDN hit lives here — must NOT be filtered out
+        assert _is_mdn_topical("regex negative lookahead syntax") is True
+
+    def test_regexp_keyword_topical(self):
+        assert _is_mdn_topical("grep vs regexp difference") is True
+
+    def test_html_topical(self):
+        assert _is_mdn_topical("html form submit input types") is True
+
+    def test_css_topical(self):
+        assert _is_mdn_topical("css flexbox vs grid which to use") is True
+
+    def test_javascript_topical(self):
+        assert _is_mdn_topical("javascript fetch vs axios") is True
+
+    def test_js_word_boundary_required(self):
+        # "js" inside another word must NOT trigger allow
+        assert _is_mdn_topical("objects destructuring in python") is False
+
+    def test_json_topical(self):
+        assert _is_mdn_topical("parse json in javascript") is True
+
+    def test_canonical_web_api_topical(self):
+        assert _is_mdn_topical("how to use websocket") is True
+        assert _is_mdn_topical("css grid layout tutorial") is True
+
+    def test_ambiguous_fetch_NOT_topical(self):
+        # "fetch" alone is ambiguous (HTTP fetch API vs the verb); we
+        # deliberately exclude it from the allow-list to avoid over-allowing.
+        # Query here avoids other web keywords (no "url"/"json"/etc.) so only
+        # "fetch" would have triggered — which it must NOT.
+        assert _is_mdn_topical("how to fetch remote data in python requests") is False
+
+    def test_empty_query_not_topical(self):
+        assert _is_mdn_topical("") is False
+
+
+class TestFilterMdnResults:
+    MDN1 = "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Glossary/Python"
+    MDN2 = "https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/13"
+    SO1 = "https://stackoverflow.com/questions/123/python-context-manager"
+    SU1 = "https://superuser.com/questions/456/login-data"
+
+    def test_drops_mdn_for_python_query(self):
+        out = filter_mdn_results(
+            [_FakeResult(self.MDN1), _FakeResult(self.SO1), _FakeResult(self.SU1)],
+            "what is a context manager in python",
+        )
+        urls = [r.url for r in out]
+        assert self.MDN1 not in urls
+        assert self.SO1 in urls
+        assert self.SU1 in urls
+
+    def test_keeps_mdn_for_regex_query(self):
+        # The known-good MDN hit on regex assertions must survive
+        mdn_regex = "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_Expressions/Lookahead"
+        so = "https://stackoverflow.com/questions/regex"
+        out = filter_mdn_results(
+            [_FakeResult(mdn_regex), _FakeResult(so)],
+            "regex negative lookahead syntax",
+        )
+        urls = [r.url for r in out]
+        assert mdn_regex in urls
+        assert so in urls
+
+    def test_preserves_order(self):
+        mdn = "https://developer.mozilla.org/x"
+        a = "https://github.com/a"
+        b = "https://gitlab.com/b"
+        out = filter_mdn_results(
+            [_FakeResult(a), _FakeResult(mdn), _FakeResult(b)],
+            "python typing generic class",
+        )
+        assert [r.url for r in out] == [a, b]
+
+    def test_all_mdn_dropped_yields_empty(self):
+        out = filter_mdn_results(
+            [_FakeResult(self.MDN1), _FakeResult(self.MDN2)],
+            "python 3.13 release announcement",
+        )
+        assert out == []
+
+    def test_empty_input_returns_empty(self):
+        assert filter_mdn_results([], "anything") == []
+
+    def test_no_mdn_returns_unchanged(self):
+        rs = [_FakeResult(self.SO1), _FakeResult(self.SU1)]
+        out = filter_mdn_results(rs, "what is a context manager in python")
+        assert [r.url for r in out] == [self.SO1, self.SU1]
+
+    def test_mdn_dev_host_also_filtered(self):
+        # alternate MDN host substring
+        rs = [_FakeResult("https://mdn.dev/foo"), _FakeResult(self.SO1)]
+        out = filter_mdn_results(rs, "docker compose healthcheck example")
+        assert [r.url for r in out] == [self.SO1]
+
+    def test_case_insensitive_url_match(self):
+        # Hosts come through with mixed case from SearXNG
+        rs = [_FakeResult("https://Developer.Mozilla.org/x"), _FakeResult(self.SO1)]
+        out = filter_mdn_results(rs, "rust trait")
+        assert [r.url for r in out] == [self.SO1]
+
