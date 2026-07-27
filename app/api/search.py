@@ -161,7 +161,13 @@ async def search(body: SearchRequest, request: Request) -> SearchResponse:
                     },
                 })
 
-    ranked = rank_chunks(body.query, all_chunks, top_k=settings.top_k_return)
+    ranked = rank_chunks(
+        body.query,
+        all_chunks,
+        top_k=settings.top_k_return,
+        absolute_floor=settings.rank_absolute_floor,
+        gap_threshold=settings.rank_gap_threshold,
+    )
 
     if ranked is None:
         # Model unavailable — degrade to flat D-013 fallback

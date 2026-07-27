@@ -82,16 +82,18 @@ class TestEmbedding:
 class TestRanking:
     @requires_model
     def test_rank_returns_top_k(self):
+        # All chunks relevant to the query → all survive the D-024 gap filter
+        # → the top_k cap is the only thing limiting the count.
         chunks = [
-            {"text": "Python is a programming language.", "parent_text": "...", "chunk_index": 0},
-            {"text": "The capital of France is Paris.", "parent_text": "...", "chunk_index": 1},
-            {"text": "Asyncio enables concurrent code.", "parent_text": "...", "chunk_index": 2},
-            {"text": "Photosynthesis produces oxygen.", "parent_text": "...", "chunk_index": 3},
+            {"text": "Python is a popular programming language used for web development.", "parent_text": "...", "chunk_index": 0},
+            {"text": "Python supports multiple programming paradigms including OOP.", "parent_text": "...", "chunk_index": 1},
+            {"text": "Python has a large standard library and ecosystem.", "parent_text": "...", "chunk_index": 2},
+            {"text": "Python is known for its readable syntax and simplicity.", "parent_text": "...", "chunk_index": 3},
         ]
         ranked = rank_chunks("what is python", chunks, top_k=2)
         assert ranked is not None
         assert len(ranked) == 2
-        # Python chunk should rank highest for "what is python" query.
+        # Most relevant Python chunk should rank highest.
         assert "Python" in ranked[0]["text"]
 
     @requires_model
@@ -196,3 +198,107 @@ class TestRanking:
         ranked = rank_chunks("python", chunks, top_k=2)
         assert ranked is not None
         assert len(ranked) == 2
+
+
+# ── D-024 filter tests (deterministic — mocked embeddings) ────
+
+
+def _mock_embeddings(monkeypatch, scores):
+    """Patch ranking_service so chunk i gets cosine `scores[i]` vs the query.
+
+    Vectors are unit-norm and aligned so dot(query, chunk_i) == scores[i].
+    Makes the floor/gap filter logic testable without the real model.
+    """
+    import numpy as np
+    from app.services import ranking_service
+
+    def fake_embed_texts(texts):
+        # unit vectors: [score, sqrt(1-score^2), 0] → dot with query = score
+        return np.array(
+            [[s, (1.0 - s * s) ** 0.5, 0.0] for s in scores],
+            dtype=np.float32,
+        )
+
+    def fake_embed_query(q):
+        return np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(ranking_service, "is_available", lambda: True)
+    monkeypatch.setattr(ranking_service, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(ranking_service, "embed_query", fake_embed_query)
+
+
+def _chunks(n, urls=None):
+    """Build n chunk dicts, optionally with source URLs for diversity tests."""
+    out = []
+    for i in range(n):
+        c = {"text": f"chunk {i}", "parent_text": "...", "chunk_index": i}
+        if urls:
+            c["source"] = {"url": urls[i], "title": f"t{i}"}
+        out.append(c)
+    return out
+
+
+class TestRankingFloorFilter:
+    """D-024 stage 1: absolute floor — max score below floor → return []."""
+
+    def test_all_noise_returns_empty(self, monkeypatch):
+        _mock_embeddings(monkeypatch, [0.1, 0.05, 0.02])  # all < 0.2 floor
+        ranked = rank_chunks("query", _chunks(3), top_k=3)
+        assert ranked == []
+
+    def test_floor_is_strictly_below(self, monkeypatch):
+        # max == 0.2 exactly → NOT below → survives (boundary check).
+        _mock_embeddings(monkeypatch, [0.2, 0.1])
+        ranked = rank_chunks("query", _chunks(2), top_k=2, gap_threshold=1.0)
+        assert ranked is not None
+        assert len(ranked) >= 1  # top survives
+
+    def test_floor_returns_empty_not_none(self, monkeypatch):
+        """Floor path returns [] (data), not None (which means model unavailable)."""
+        _mock_embeddings(monkeypatch, [0.05])
+        ranked = rank_chunks("query", _chunks(1), top_k=1)
+        assert ranked == []
+        assert ranked is not None
+
+
+class TestRankingGapFilter:
+    """D-024 stage 2: relative gap — drop chunks far below the top hit."""
+
+    def test_drops_chunks_beyond_gap(self, monkeypatch):
+        # top=0.8, gap=0.15 → keep 0.8 & 0.7 (gap 0.1), drop 0.5 (gap 0.3)
+        _mock_embeddings(monkeypatch, [0.8, 0.7, 0.5])
+        ranked = rank_chunks("query", _chunks(3), top_k=3, gap_threshold=0.15)
+        assert ranked is not None
+        scores = [r["score"] for r in ranked]
+        # 0.5 (gap 0.3 > 0.15) dropped; 0.8 & 0.7 kept. Use tolerance —
+        # float32 makes 0.8 -> 0.8000000119...
+        assert all(abs(s - 0.5) > 1e-3 for s in scores)
+        assert any(abs(s - 0.8) < 1e-3 for s in scores)
+        assert any(abs(s - 0.7) < 1e-3 for s in scores)
+
+    def test_keeps_at_least_top1(self, monkeypatch):
+        # top=0.5 (above floor), others way below → only top survives
+        _mock_embeddings(monkeypatch, [0.5, 0.1, 0.05])
+        ranked = rank_chunks("query", _chunks(3), top_k=3, gap_threshold=0.15)
+        assert ranked is not None
+        assert len(ranked) == 1
+        assert abs(ranked[0]["score"] - 0.5) < 1e-3
+
+    def test_all_close_survive(self, monkeypatch):
+        # scores clustered → all within gap → all kept (then capped by top_k)
+        _mock_embeddings(monkeypatch, [0.6, 0.58, 0.55])
+        ranked = rank_chunks("query", _chunks(3), top_k=3, gap_threshold=0.15)
+        assert ranked is not None
+        assert len(ranked) == 3
+
+    def test_gap_runs_before_diversity(self, monkeypatch):
+        """A dropped chunk must NOT be resurrected by the diversity fill."""
+        # top=0.8 (url a), second=0.6 (url a, dropped by gap), third=0.5 (url b, dropped)
+        _mock_embeddings(monkeypatch, [0.8, 0.6, 0.5])
+        urls = ["https://a.com", "https://a.com", "https://b.com"]
+        ranked = rank_chunks("query", _chunks(3, urls), top_k=2, gap_threshold=0.15)
+        assert ranked is not None
+        # Only the top survived the gap → only 1 result, even though top_k=2
+        # and a second URL exists. Diversity can't pull back dropped chunks.
+        assert len(ranked) == 1
+        assert ranked[0]["source"]["url"] == "https://a.com"

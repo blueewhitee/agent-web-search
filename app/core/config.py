@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     extract_timeout: float = 5.0          # per-extraction deadline (trafilatura/lxml hang guard)
     max_chunks_per_url: int = 20          # cap chunks embedded per page (bound cost on giant docs)
     searxng_empty_fallback: bool = True   # retry `general` when auto-detected category returns 0
+    # Ranking thresholds (D-024): PLACEHOLDER defaults — calibrate from the
+    # evals harness (known-relevant + known-garbage query sets) before trusting.
+    rank_absolute_floor: float = 0.2  # backstop: max cosine < this -> no signal, return []
+    rank_gap_threshold: float = 0.15  # drop chunks more than this below the top hit (relative gap)
 
 
 settings = Settings()

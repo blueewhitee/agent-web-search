@@ -21,18 +21,36 @@ def rank_chunks(
     query: str,
     chunks: list[dict],
     top_k: int = 3,
+    absolute_floor: float = 0.2,
+    gap_threshold: float = 0.15,
 ) -> list[dict] | None:
     """Embed query + chunks, return top-K sorted by cosine similarity.
 
+    Two-stage relevance filter runs BEFORE diversity selection (D-024):
+      1. Absolute floor: if the top score < ``absolute_floor`` there is no
+         signal at all (SearXNG returned all-garbage) -> return []. This is a
+         sanity backstop, NOT precision work — BGE scores are cross-query
+         stable only at the "noise" end (~0.2), so the floor is calibrated
+         loosely from known-garbage pages.
+      2. Relative gap: drop any chunk whose score is more than ``gap_threshold``
+         below the top hit. This is the precision work — BGE's absolute scores
+         aren't calibrated, but the gap from the best hit IS query-adaptive.
+
+    Order: score all -> floor check -> gap filter -> D-020 diversity -> top_k.
+
     Args:
-        query:  Raw user query (prefix applied internally).
-        chunks: List of chunk dicts with keys:
-                {"text", "parent_text", "chunk_index", "source" (optional)}.
-        top_k:  Number of top chunks to return.
+        query:          Raw user query (prefix applied internally).
+        chunks:         List of chunk dicts with keys:
+                        {"text", "parent_text", "chunk_index", "source" (optional)}.
+        top_k:          Number of top chunks to return.
+        absolute_floor: Backstop max-score cutoff (return [] below this).
+        gap_threshold:  Drop chunks more than this below the top hit.
 
     Returns:
         List of chunk dicts enriched with a "score" key, sorted descending.
-        Returns None if embedding model unavailable.
+        Returns [] if the top score is below the floor (no signal) or no
+        chunks survive the gap filter.
+        Returns None if the embedding model is unavailable (caller degrades).
     """
     import numpy as np
 
@@ -53,31 +71,57 @@ def rank_chunks(
     # Cosine similarity = dot product (both already L2-normalized).
     scores = chunk_vecs @ query_vec  # (n,)
 
-    k = min(top_k, len(chunks))
+    # Sort once, descending. all_indices[0] is the best chunk.
+    all_indices = np.argsort(scores)[::-1]
+    max_score = float(scores[all_indices[0]])
+
+    # ── D-024 filter stage 1: absolute floor (sanity backstop) ──────────
+    # If even the best chunk is below the floor, SearXNG returned all-garbage.
+    # Admit defeat (empty list) rather than serve noise to the LLM. The caller
+    # (agent's LLM, per D-009) decides the user-facing "couldn't find anything"
+    # message — the API just returns no ranked chunks.
+    if max_score < absolute_floor:
+        return []
+
+    # ── D-024 filter stage 2: relative gap (precision work) ─────────────
+    # Drop chunks more than `gap_threshold` below the top hit. BGE absolute
+    # scores aren't cross-query calibrated, but the gap from the best hit is
+    # query-adaptive. Keep at least the top-1 (it cleared the floor).
+    candidates = [
+        int(i) for i in all_indices
+        if (max_score - float(scores[i])) <= gap_threshold
+    ]
+    # Defensive: floor passed so top-1 is always in candidates, but guard
+    # against FP edge cases leaving the list empty.
+    if not candidates:
+        candidates = [int(all_indices[0])]
+
+    k = min(top_k, len(candidates))
 
     # Source diversity (D-020): one chunk per unique source URL in top-K.
     # Two passes: first collect one chunk per URL, then fill remaining
-    # slots from any source if not enough unique URLs exist.
-    all_indices = np.argsort(scores)[::-1]
+    # slots from any source if not enough unique URLs exist. Operates on the
+    # gap-filtered `candidates` (preserves score order) so diversity never
+    # resurrects a chunk the gap filter dropped.
     seen_urls: set[str] = set()
     diversified: list[int] = []
 
-    for idx in all_indices:
+    for idx in candidates:
         url = chunks[idx].get("source", {}).get("url", "")
         if url and url in seen_urls:
             continue
         if url:
             seen_urls.add(url)
-        diversified.append(int(idx))
+        diversified.append(idx)
         if len(diversified) >= k:
             break
 
     # Fallback: if not enough unique source URLs, fill remaining slots
-    # with the next-best chunks regardless of source.
+    # with the next-best gap-filtered chunks regardless of source.
     if len(diversified) < k:
-        for idx in all_indices:
+        for idx in candidates:
             if idx not in diversified:
-                diversified.append(int(idx))
+                diversified.append(idx)
                 if len(diversified) >= k:
                     break
 
