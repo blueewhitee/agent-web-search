@@ -25,7 +25,7 @@ Returns Chonkie-chunked, cosine-ranked JSON ready for RAG.
 [![Python](https://img.shields.io/badge/Python-3.12+-blue?logo=python)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](https://docs.docker.com/)
 [![MCP](https://img.shields.io/badge/MCP-ready-purple)](https://modelcontextprotocol.io)
-[![PyPI](https://img.shields.io/pypi/v/agent-web-search)](https://pypi.org/project/agent-web-search/)
+[![PyPI](https://img.shields.io/pypi/v/agent-web-search?logo=pypi&logoColor=white)](https://pypi.org/project/agent-web-search/)
 [![Tests](https://img.shields.io/badge/tests-175%20passed-brightgreen)](#development)
 
 </div>
