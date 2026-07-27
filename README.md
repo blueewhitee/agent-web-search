@@ -25,7 +25,8 @@ Returns Chonkie-chunked, cosine-ranked JSON ready for RAG.
 [![Python](https://img.shields.io/badge/Python-3.12+-blue?logo=python)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](https://docs.docker.com/)
 [![MCP](https://img.shields.io/badge/MCP-ready-purple)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/tests-140%20passed-brightgreen)](#development)
+[![PyPI](https://img.shields.io/pypi/v/agent-web-search)](https://pypi.org/project/agent-web-search/)
+[![Tests](https://img.shields.io/badge/tests-175%20passed-brightgreen)](#development)
 
 </div>
 
@@ -43,6 +44,17 @@ Full stack on `http://localhost:8000` — SearXNG + FastAPI + embedding model, *
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
   -d '{"query": "python asyncio tutorial", "include_content": true}'
+```
+
+**Or use the Python SDK** (one `pip install`):
+
+```python
+from agent_web_search import AgentWebSearch
+
+with AgentWebSearch(base_url="http://localhost:8000") as client:
+    response = client.search("python asyncio", include_content=True)
+    for chunk in response.ranked_chunks:
+        print(f"{chunk.score:.3f}  {chunk.source.url}")
 ```
 
 **Wire it into an MCP agent** (Claude Desktop, Cursor, Pi):
@@ -67,6 +79,7 @@ curl -X POST http://localhost:8000/search \
 - [Features](#features)
 - [API Reference](#api-reference)
 - [MCP Integration](#mcp-integration)
+- [Python SDK](#python-sdk)
 - [SearXNG Configuration](#searxng-configuration)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -132,6 +145,7 @@ query → SearXNG → fetch → extract → scrub → chunk → embed → rank �
 | 🛡️ **Prompt-injection scrubbing** | Detects and redacts prompt-injection patterns in fetched content before it reaches your LLM. |
 | 🧩 **Chunk + embed + rank** | 256-token Chonkie chunks with 512-token parent windows, `bge-small-en-v1.5` embeddings, cosine-ranked with source diversity. Output shape matches what RAG pipelines expect. |
 | 🔌 **MCP native** | Thin stdio wrapper. Connect Claude Desktop, Cursor, or Pi in 30 seconds — no translation layer. |
+| 🐍 **Python SDK** | `pip install agent-web-search`. Type-safe sync + async client, Pydantic v2, same vibe as the OpenAI SDK. [Repo →](https://github.com/blueewhitee/agent-web-search-sdk) |
 | 🎬 **JS rendering (opt-in)** | `render_js: true` triggers crawl4ai for JavaScript-heavy pages. Not bundled by default; `pip install crawl4ai` when you need it. |
 | 🐳 **Docker all-in-one** | `docker compose up` brings up SearXNG, the FastAPI, and the embedding model. No GPU required. |
 
@@ -221,6 +235,35 @@ The MCP server exposes `web_search` as a tool for any MCP-compatible client. It 
 
 **Cursor** (`.cursor/mcp.json`): Same format as Claude Desktop.
 
+## Python SDK
+
+The `agent-web-search` PyPI package gives you a type-safe Python client with sync and async surfaces — same look as the OpenAI SDK.
+
+```bash
+pip install agent-web-search
+```
+
+```python
+from agent_web_search import AgentWebSearch, AsyncAgentWebSearch
+
+# Sync
+with AgentWebSearch(base_url="http://localhost:8000") as client:
+    response = client.search("python asyncio", include_content=True)
+    for chunk in response.ranked_chunks:
+        print(f"{chunk.score:.3f}  {chunk.source.title}")
+
+# Async (great for batching multiple searches)
+import asyncio
+async with AsyncAgentWebSearch() as client:
+    results = await asyncio.gather(
+        client.search("python asyncio"),
+        client.search("rust borrow checker"),
+        client.search("docker healthcheck"),
+    )
+```
+
+The SDK is a **thin wrapper** — no pipeline logic, no duplicate code. It calls the same HTTP API you'd `curl`. Full docs, tests, and source: [agent-web-search-sdk](https://github.com/blueewhitee/agent-web-search-sdk).
+
 ## SearXNG Configuration
 
 The bundled `searxng/config/settings.yml` is pre-tuned for reliability: engines that cause 30s timeouts (Google, Bing, Yahoo, Startpage, Brave) are **disabled**. The active engine lineup:
@@ -252,7 +295,7 @@ Environment variables (or `.env`):
 ```bash
 uv sync
 uv run uvicorn main:app --reload
-uv run pytest    # 140 tests, 0 failures
+uv run pytest    # 175 tests, 0 failures
 ```
 
 Requires SearXNG on port 8080:
