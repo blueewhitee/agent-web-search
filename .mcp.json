@@ -1,13 +1,7 @@
 {
   "mcpServers": {
-    "nature-search": {
-      "command": "uv",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "mcp_server.server"
-      ],
+    "agent-web-search": {
+      "command": "agent-web-search-mcp",
       "env": {
         "NATURE_SE_API_URL": "http://localhost:8000"
       },
