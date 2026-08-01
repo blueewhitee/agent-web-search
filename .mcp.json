@@ -3,7 +3,7 @@
     "agent-web-search": {
       "command": "agent-web-search-mcp",
       "env": {
-        "NATURE_SE_API_URL": "http://localhost:8000"
+        "AGENT_WEB_SEARCH_API_URL": "http://localhost:8000"
       },
       "directTools": true
     }

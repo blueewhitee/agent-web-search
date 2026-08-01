@@ -62,10 +62,9 @@ with AgentWebSearch(base_url="http://localhost:8000") as client:
 ```json
 {
   "mcpServers": {
-    "nature-search": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp_server.server"],
-      "env": { "NATURE_SE_API_URL": "http://localhost:8000" }
+    "agent-web-search": {
+      "command": "agent-web-search-mcp",
+      "env": { "AGENT_WEB_SEARCH_API_URL": "http://localhost:8000" }
     }
   }
 }
@@ -210,10 +209,9 @@ The MCP server exposes `web_search` as a tool for any MCP-compatible client. It 
 ```json
 {
   "mcpServers": {
-    "nature-search": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp_server.server"],
-      "env": { "NATURE_SE_API_URL": "http://localhost:8000" },
+    "agent-web-search": {
+      "command": "agent-web-search-mcp",
+      "env": { "AGENT_WEB_SEARCH_API_URL": "http://localhost:8000" },
       "directTools": true
     }
   }
@@ -224,10 +222,9 @@ The MCP server exposes `web_search` as a tool for any MCP-compatible client. It 
 ```json
 {
   "mcpServers": {
-    "nature-search": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/agent-web-search", "python", "-m", "mcp_server.server"],
-      "env": { "NATURE_SE_API_URL": "http://localhost:8000" }
+    "agent-web-search": {
+      "command": "agent-web-search-mcp",
+      "env": { "AGENT_WEB_SEARCH_API_URL": "http://localhost:8000" }
     }
   }
 }
